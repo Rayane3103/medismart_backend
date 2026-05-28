@@ -4,3 +4,4 @@
 [Upstash Redis] The 'token' property is missing or undefined in your Redis config.
 [Upstash Redis] Redis client was initialized without url or token. Failed to execute command.
 [Upstash Redis] Redis client was initialized without url or token. Failed to execute command.
+[Upstash Redis] Redis client was initialized without url or token. Failed to execute command.
