@@ -2,3 +2,5 @@
 [Upstash Redis] Unable to find environment variable: `UPSTASH_REDIS_REST_TOKEN`
 [Upstash Redis] The 'url' property is missing or undefined in your Redis config.
 [Upstash Redis] The 'token' property is missing or undefined in your Redis config.
+[Upstash Redis] Redis client was initialized without url or token. Failed to execute command.
+[Upstash Redis] Redis client was initialized without url or token. Failed to execute command.

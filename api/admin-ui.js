@@ -14,7 +14,7 @@ export const ADMIN_HTML = `<!doctype html>
         <span class="brand-mark">M</span>
         <span>
           <strong>MediSmart</strong>
-          <small>AI Credits</small>
+          <small>AI Control</small>
         </span>
       </a>
       <div class="top-actions">
@@ -27,7 +27,7 @@ export const ADMIN_HTML = `<!doctype html>
       <div class="auth-card">
         <div>
           <p class="eyebrow">Super Admin</p>
-          <h1>Provider keys, doctor credits, and AI access.</h1>
+          <h1>Keys, doctors, and usage limits.</h1>
         </div>
         <form id="authForm" class="auth-form">
           <label>
@@ -43,37 +43,48 @@ export const ADMIN_HTML = `<!doctype html>
       <section class="workspace-head">
         <div>
           <p class="eyebrow">Operations</p>
-          <h1>Doctors</h1>
+          <h1>Admin Panel</h1>
         </div>
-        <button id="newDoctorButton" type="button">New doctor</button>
+        <div class="workspace-actions">
+          <button id="newKeyButton" type="button">Add API key</button>
+          <button id="newDoctorButton" type="button">New doctor</button>
+        </div>
       </section>
 
       <section class="metrics" id="metrics"></section>
 
+      <section class="surface">
+        <div class="surface-head">
+          <h2>Named API Keys</h2>
+          <span id="keyCount">0 keys</span>
+        </div>
+        <div class="key-list" id="keyRows"></div>
+      </section>
+
       <section class="controls">
         <label class="search-box">
-          <span>Search</span>
-          <input id="searchInput" type="search" placeholder="Name, email, or doctor ID">
+          <span>Search doctors</span>
+          <input id="searchInput" type="search" placeholder="Email, doctor ID, or key name">
         </label>
         <label>
-          <span>Provider</span>
-          <select id="providerFilter">
-            <option value="all">All providers</option>
+          <span>Assigned key</span>
+          <select id="keyFilter">
+            <option value="all">All keys</option>
           </select>
         </label>
       </section>
 
       <section class="surface">
         <div class="surface-head">
-          <h2>Accounts</h2>
-          <span id="doctorCount">0 records</span>
+          <h2>Doctors</h2>
+          <span id="doctorCount">0 doctors</span>
         </div>
         <div class="doctor-list" id="doctorRows"></div>
       </section>
 
       <section class="surface compact">
         <div class="surface-head">
-          <h2>Credit Costs</h2>
+          <h2>Action Costs</h2>
           <button class="ghost" id="saveCostsButton" type="button">Save costs</button>
         </div>
         <div class="cost-grid" id="costGrid"></div>
@@ -81,33 +92,80 @@ export const ADMIN_HTML = `<!doctype html>
     </main>
   </div>
 
-  <dialog class="modal" id="doctorDialog">
-    <form method="dialog" class="modal-panel" id="doctorForm">
+  <dialog class="modal" id="keyDialog">
+    <form class="modal-panel" id="keyForm">
       <div class="modal-head">
         <div>
-          <p class="eyebrow" id="doctorDialogMode">Create</p>
-          <h2 id="doctorDialogTitle">New doctor</h2>
+          <p class="eyebrow" id="keyDialogMode">Create</p>
+          <h2 id="keyDialogTitle">API key</h2>
         </div>
-        <button class="icon-button" value="cancel" type="button" data-close-dialog="doctorDialog" aria-label="Close">x</button>
+        <button class="icon-button" type="button" data-close-dialog="keyDialog" aria-label="Close">x</button>
       </div>
 
-      <input type="hidden" id="doctorId">
+      <input id="keyId" type="hidden">
       <div class="form-grid">
         <label>
           <span>Name</span>
-          <input id="doctorName" name="name" required>
+          <input id="keyName" required placeholder="Groq main, Gemini backup">
         </label>
+        <label>
+          <span>Provider</span>
+          <select id="keyProvider"></select>
+        </label>
+        <label>
+          <span>Model</span>
+          <input id="keyModel" required>
+        </label>
+        <label>
+          <span>API key</span>
+          <input id="keySecret" type="password" autocomplete="off" placeholder="Paste key">
+        </label>
+      </div>
+      <div class="toggle-row">
+        <label class="toggle">
+          <input id="keyActive" type="checkbox" checked>
+          <span></span>
+          Active
+        </label>
+        <label class="mini-check hidden" id="clearKeyWrap">
+          <input id="clearKeySecret" type="checkbox">
+          Clear saved secret
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button class="ghost" type="button" data-close-dialog="keyDialog">Cancel</button>
+        <button type="submit">Save key</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="modal" id="doctorDialog">
+    <form class="modal-panel" id="doctorForm">
+      <div class="modal-head">
+        <div>
+          <p class="eyebrow" id="doctorDialogMode">Create</p>
+          <h2 id="doctorDialogTitle">Doctor</h2>
+        </div>
+        <button class="icon-button" type="button" data-close-dialog="doctorDialog" aria-label="Close">x</button>
+      </div>
+
+      <input id="doctorId" type="hidden">
+      <div class="form-grid">
         <label>
           <span>Email</span>
-          <input id="doctorEmail" name="email" type="email">
+          <input id="doctorEmail" type="email" required>
         </label>
         <label>
-          <span>Plan</span>
-          <select id="doctorPlan" name="plan_name"></select>
+          <span>Assigned API key</span>
+          <select id="doctorAssignedKey"></select>
         </label>
-        <label id="secretField">
-          <span>Secret</span>
-          <input id="doctorSecret" name="secret" autocomplete="new-password" placeholder="Generated if empty">
+        <label>
+          <span>Monthly usage</span>
+          <input id="doctorMonthlyLimit" type="number" min="0" step="1" required>
+        </label>
+        <label>
+          <span>Daily usage</span>
+          <input id="doctorDailyLimit" type="number" min="0" step="1" required>
         </label>
       </div>
 
@@ -124,73 +182,27 @@ export const ADMIN_HTML = `<!doctype html>
         </label>
       </div>
 
-      <section class="provider-editor">
-        <div class="surface-head inline">
-          <h3>AI Provider</h3>
-        </div>
-        <div class="segmented" id="providerSegment">
+      <section class="usage-tools hidden" id="doctorUsageTools">
+        <div class="form-grid">
           <label>
-            <input type="radio" name="ai_provider" value="groq" checked>
-            <span>Groq</span>
+            <span>Set monthly used</span>
+            <input id="setMonthlyUsed" type="number" min="0" step="1" placeholder="Leave empty">
           </label>
           <label>
-            <input type="radio" name="ai_provider" value="gemini">
-            <span>Gemini</span>
+            <span>Set daily used</span>
+            <input id="setDailyUsed" type="number" min="0" step="1" placeholder="Leave empty">
           </label>
         </div>
-        <div class="key-grid">
-          <div class="key-box">
-            <div class="key-title">
-              <strong>Groq</strong>
-              <span id="groqKeyState">No key</span>
-            </div>
-            <label>
-              <span>API key</span>
-              <input id="groqApiKey" type="password" autocomplete="off" placeholder="Paste a new Groq key">
-            </label>
-            <label>
-              <span>Model</span>
-              <input id="groqModel">
-            </label>
-            <label class="mini-check hidden" id="clearGroqWrap">
-              <input id="clearGroqKey" type="checkbox">
-              Clear saved Groq key
-            </label>
-          </div>
-          <div class="key-box">
-            <div class="key-title">
-              <strong>Gemini</strong>
-              <span id="geminiKeyState">No key</span>
-            </div>
-            <label>
-              <span>API key</span>
-              <input id="geminiApiKey" type="password" autocomplete="off" placeholder="Paste a new Gemini key">
-            </label>
-            <label>
-              <span>Model</span>
-              <input id="geminiModel">
-            </label>
-            <label class="mini-check hidden" id="clearGeminiWrap">
-              <input id="clearGeminiKey" type="checkbox">
-              Clear saved Gemini key
-            </label>
-          </div>
+        <div class="toggle-row">
+          <label class="mini-check">
+            <input id="resetMonthly" type="checkbox">
+            Reset monthly usage
+          </label>
+          <label class="mini-check">
+            <input id="resetDaily" type="checkbox">
+            Reset daily usage
+          </label>
         </div>
-      </section>
-
-      <section class="credit-tools">
-        <label>
-          <span>Add credits</span>
-          <input id="addCredits" type="number" min="0" step="1" placeholder="0">
-        </label>
-        <label>
-          <span>Set used credits</span>
-          <input id="setUsedCredits" type="number" min="0" step="1" placeholder="Leave empty">
-        </label>
-        <label class="mini-check">
-          <input id="resetMonthly" type="checkbox">
-          Reset monthly usage
-        </label>
       </section>
 
       <div class="modal-actions">
@@ -246,9 +258,9 @@ export const ADMIN_HTML = `<!doctype html>
 
 export const ADMIN_CSS = `:root {
   color-scheme: light;
-  --ink: #14201d;
-  --muted: #66716d;
-  --line: #dce4e1;
+  --ink: #13201d;
+  --muted: #66736e;
+  --line: #dbe5e1;
   --panel: #ffffff;
   --page: #f4f7f6;
   --deep: #102a25;
@@ -260,6 +272,8 @@ export const ADMIN_CSS = `:root {
   --amber-soft: #fff2d6;
   --violet: #6750a4;
   --violet-soft: #ece7ff;
+  --blue-soft: #e4f1ff;
+  --blue: #2463a6;
   --shadow: 0 18px 50px rgba(16, 42, 37, 0.12);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
@@ -273,9 +287,7 @@ body {
   min-width: 320px;
 }
 
-button, input, select {
-  font: inherit;
-}
+button, input, select { font: inherit; }
 
 button {
   border: 0;
@@ -284,7 +296,7 @@ button {
   padding: 0 16px;
   background: var(--teal);
   color: #fff;
-  font-weight: 700;
+  font-weight: 800;
   cursor: pointer;
   white-space: nowrap;
 }
@@ -299,6 +311,7 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 }
 
 .danger { color: var(--coral); }
+.hidden { display: none !important; }
 
 .icon-button {
   width: 36px;
@@ -311,18 +324,13 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
   color: var(--ink);
 }
 
-.hidden { display: none !important; }
-
-.shell {
-  min-height: 100vh;
-}
-
 .topbar {
-  height: 72px;
-  padding: 0 clamp(16px, 4vw, 40px);
+  min-height: 72px;
+  padding: 14px clamp(16px, 4vw, 40px);
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
   border-bottom: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.92);
   position: sticky;
@@ -350,21 +358,15 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
   font-weight: 900;
 }
 
-.brand strong, .brand small {
-  display: block;
-  line-height: 1.1;
-}
+.brand strong, .brand small { display: block; line-height: 1.1; }
+.brand small { color: var(--muted); font-size: 12px; margin-top: 3px; }
 
-.brand small {
-  color: var(--muted);
-  font-size: 12px;
-  margin-top: 3px;
-}
-
-.top-actions {
+.top-actions, .workspace-actions {
   display: flex;
   gap: 10px;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .auth-panel {
@@ -391,7 +393,6 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
   margin: 8px 0 0;
   font-size: clamp(32px, 6vw, 62px);
   line-height: 0.98;
-  max-width: 720px;
   letter-spacing: 0;
 }
 
@@ -451,21 +452,12 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
   min-height: 96px;
 }
 
-.metric span {
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.metric strong {
-  display: block;
-  margin-top: 8px;
-  font-size: 28px;
-  line-height: 1;
-}
+.metric span { color: var(--muted); font-size: 13px; }
+.metric strong { display: block; margin-top: 8px; font-size: 28px; line-height: 1; }
 
 .controls {
   display: grid;
-  grid-template-columns: minmax(240px, 1fr) 220px;
+  grid-template-columns: minmax(240px, 1fr) 240px;
   gap: 12px;
   margin-bottom: 14px;
 }
@@ -475,7 +467,7 @@ label {
   gap: 7px;
   color: var(--muted);
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 800;
 }
 
 input, select {
@@ -513,13 +505,7 @@ input:focus, select:focus {
   border-bottom: 1px solid var(--line);
 }
 
-.surface-head.inline {
-  padding: 0;
-  border-bottom: 0;
-  margin-bottom: 10px;
-}
-
-.surface-head h2, .surface-head h3 {
+.surface-head h2 {
   margin: 0;
   font-size: 18px;
 }
@@ -527,31 +513,30 @@ input:focus, select:focus {
 .surface-head span {
   color: var(--muted);
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 800;
 }
 
-.doctor-list {
-  display: grid;
-}
+.key-list, .doctor-list { display: grid; }
 
-.doctor-row {
+.key-row, .doctor-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1.2fr) minmax(160px, 0.8fr) minmax(180px, 0.8fr) minmax(230px, auto);
   gap: 14px;
   align-items: center;
   padding: 16px;
   border-top: 1px solid var(--line);
 }
 
-.doctor-row:first-child { border-top: 0; }
+.key-row:first-child, .doctor-row:first-child { border-top: 0; }
+.key-row { grid-template-columns: minmax(220px, 1.1fr) minmax(190px, 0.9fr) minmax(150px, 0.7fr) minmax(180px, auto); }
+.doctor-row { grid-template-columns: minmax(240px, 1.1fr) minmax(190px, 0.9fr) minmax(280px, 1fr) minmax(190px, auto); }
 
-.doctor-main strong {
+.row-main strong {
   display: block;
   font-size: 16px;
   margin-bottom: 5px;
 }
 
-.doctor-main span, .subtle {
+.row-main span, .subtle {
   display: block;
   color: var(--muted);
   font-size: 13px;
@@ -574,28 +559,34 @@ input:focus, select:focus {
   background: #eef4f2;
   color: var(--deep);
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 900;
 }
 
 .badge.teal { background: var(--teal-soft); color: #006a5d; }
 .badge.coral { background: var(--coral-soft); color: #9e332a; }
 .badge.amber { background: var(--amber-soft); color: var(--amber); }
 .badge.violet { background: var(--violet-soft); color: var(--violet); }
+.badge.blue { background: var(--blue-soft); color: var(--blue); }
+
+.usage-stack { display: grid; gap: 10px; }
+.usage-line { display: grid; gap: 5px; }
+.usage-line span { color: var(--muted); font-size: 13px; }
 
 .progress {
   height: 8px;
   border-radius: 999px;
   background: #edf2f0;
   overflow: hidden;
-  margin-top: 8px;
 }
 
 .progress span {
   display: block;
   height: 100%;
-  background: var(--teal);
   min-width: 2px;
+  background: var(--teal);
 }
+
+.progress.daily span { background: var(--blue); }
 
 .row-actions {
   display: flex;
@@ -624,7 +615,7 @@ input:focus, select:focus {
 }
 
 .modal {
-  width: min(920px, calc(100% - 24px));
+  width: min(860px, calc(100% - 24px));
   border: 0;
   padding: 0;
   background: transparent;
@@ -656,7 +647,7 @@ input:focus, select:focus {
   font-size: 24px;
 }
 
-.form-grid, .key-grid, .credit-tools {
+.form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
@@ -666,7 +657,7 @@ input:focus, select:focus {
   display: flex;
   gap: 16px;
   flex-wrap: wrap;
-  margin: 16px 0;
+  margin: 16px 0 0;
 }
 
 .toggle, .mini-check {
@@ -683,68 +674,10 @@ input:focus, select:focus {
   padding: 0;
 }
 
-.provider-editor, .credit-tools {
+.usage-tools {
   border-top: 1px solid var(--line);
   padding-top: 16px;
   margin-top: 16px;
-}
-
-.segmented {
-  display: inline-grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 4px;
-  padding: 4px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #f5f8f7;
-  margin-bottom: 14px;
-}
-
-.segmented label {
-  display: block;
-}
-
-.segmented input {
-  position: absolute;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.segmented span {
-  display: grid;
-  place-items: center;
-  min-height: 34px;
-  min-width: 112px;
-  border-radius: 6px;
-  color: var(--muted);
-  font-weight: 900;
-}
-
-.segmented input:checked + span {
-  background: #fff;
-  color: var(--teal);
-  box-shadow: 0 1px 6px rgba(16, 42, 37, 0.1);
-}
-
-.key-box {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 14px;
-  display: grid;
-  gap: 12px;
-}
-
-.key-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.key-title span {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 800;
 }
 
 .modal-actions {
@@ -788,20 +721,18 @@ input:focus, select:focus {
   z-index: 50;
 }
 
-@media (max-width: 980px) {
+@media (max-width: 1040px) {
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .doctor-row { grid-template-columns: 1fr; }
+  .key-row, .doctor-row { grid-template-columns: 1fr; }
   .row-actions { justify-content: flex-start; }
   .cost-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 720px) {
-  .topbar { height: auto; min-height: 68px; align-items: flex-start; padding-top: 14px; padding-bottom: 14px; }
-  .top-actions { flex-wrap: wrap; justify-content: flex-end; }
-  .auth-card { grid-template-columns: 1fr; }
-  .controls, .metrics, .form-grid, .key-grid, .credit-tools, .cost-grid, .credential-grid { grid-template-columns: 1fr; }
+  .topbar { align-items: flex-start; }
+  .auth-card, .controls, .metrics, .form-grid, .cost-grid, .credential-grid { grid-template-columns: 1fr; }
   .workspace-head { align-items: stretch; flex-direction: column; }
-  .workspace-head button { width: 100%; }
+  .workspace-actions, .workspace-actions button { width: 100%; }
   .log-row { grid-template-columns: 1fr; }
 }
 `;
@@ -822,12 +753,14 @@ export const ADMIN_JS = `(function () {
   var state = {
     token: localStorage.getItem("medismart_admin_token") || "",
     rows: [],
-    plans: {},
+    apiKeys: [],
     providers: {},
     creditCosts: {},
+    defaults: { monthly_limit: 500, daily_limit: 50 },
     query: "",
-    provider: "all",
-    editingId: ""
+    keyFilter: "all",
+    editingDoctorId: "",
+    editingKeyId: ""
   };
 
   var el = {};
@@ -892,66 +825,107 @@ export const ADMIN_JS = `(function () {
   async function loadData() {
     var data = await apiFetch("/api/admin/doctors");
     state.rows = data.rows || [];
-    state.plans = data.plans || {};
+    state.apiKeys = data.api_keys || [];
     state.providers = data.providers || {};
     state.creditCosts = data.credit_costs || {};
-    renderProviderFilter();
-    renderPlans();
+    state.defaults = data.default_limits || state.defaults;
+    renderProviderOptions();
+    renderKeyFilter();
+    renderDoctorKeyOptions();
     renderMetrics();
-    renderRows();
+    renderKeys();
+    renderDoctors();
     renderCosts();
   }
 
-  function renderProviderFilter() {
-    var current = el.providerFilter.value || state.provider || "all";
-    var html = '<option value="all">All providers</option>';
+  function renderProviderOptions() {
+    var html = "";
     Object.keys(state.providers).forEach(function (key) {
       html += '<option value="' + escapeHtml(key) + '">' + escapeHtml(state.providers[key].label) + '</option>';
     });
-    el.providerFilter.innerHTML = html;
-    el.providerFilter.value = state.providers[current] ? current : "all";
+    el.keyProvider.innerHTML = html;
   }
 
-  function renderPlans() {
-    var html = "";
-    Object.keys(state.plans).forEach(function (key) {
-      var plan = state.plans[key];
-      html += '<option value="' + escapeHtml(key) + '">' + escapeHtml(plan.label) + '</option>';
+  function renderKeyFilter() {
+    var current = state.keyFilter || "all";
+    var html = '<option value="all">All keys</option><option value="">No key assigned</option>';
+    state.apiKeys.forEach(function (key) {
+      html += '<option value="' + escapeHtml(key.id) + '">' + escapeHtml(key.name) + '</option>';
     });
-    el.doctorPlan.innerHTML = html;
+    el.keyFilter.innerHTML = html;
+    el.keyFilter.value = current === "all" || current === "" || findKey(current) ? current : "all";
   }
 
-  function filteredRows() {
-    var q = state.query.trim().toLowerCase();
-    return state.rows.filter(function (row) {
-      var providerOk = state.provider === "all" || row.ai_provider === state.provider;
-      var hay = [row.name, row.email, row.doctor_id, row.plan_label, row.ai_provider_label].join(" ").toLowerCase();
-      var queryOk = !q || hay.indexOf(q) !== -1;
-      return providerOk && queryOk;
+  function renderDoctorKeyOptions() {
+    var html = '<option value="">No key</option>';
+    state.apiKeys.forEach(function (key) {
+      html += '<option value="' + escapeHtml(key.id) + '">' + escapeHtml(key.name) + ' - ' + escapeHtml(key.provider_label) + '</option>';
     });
+    el.doctorAssignedKey.innerHTML = html;
   }
 
   function renderMetrics() {
-    var total = state.rows.length;
-    var active = state.rows.filter(function (row) { return row.active; }).length;
-    var used = state.rows.reduce(function (sum, row) { return sum + (row.used_credits || 0); }, 0);
-    var missing = state.rows.filter(function (row) { return !row.has_active_provider_key; }).length;
-    var groq = state.rows.filter(function (row) { return row.ai_provider === "groq"; }).length;
-    var gemini = state.rows.filter(function (row) { return row.ai_provider === "gemini"; }).length;
+    var totalDoctors = state.rows.length;
+    var activeDoctors = state.rows.filter(function (row) { return row.active; }).length;
+    var totalKeys = state.apiKeys.length;
+    var monthlyUsed = state.rows.reduce(function (sum, row) { return sum + (row.monthly_used || 0); }, 0);
+    var dailyUsed = state.rows.reduce(function (sum, row) { return sum + (row.daily_used || 0); }, 0);
     el.metrics.innerHTML =
-      metric("Doctors", total) +
-      metric("Active", active) +
-      metric("Credits used", used) +
-      metric("Providers", "G " + groq + " / M " + gemini + (missing ? " / " + missing + " missing" : ""));
+      metric("API keys", totalKeys) +
+      metric("Doctors", totalDoctors) +
+      metric("Active doctors", activeDoctors) +
+      metric("Used today", dailyUsed + " / " + monthlyUsed + " month");
   }
 
   function metric(label, value) {
     return '<article class="metric"><span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(value) + '</strong></article>';
   }
 
-  function renderRows() {
-    var rows = filteredRows();
-    el.doctorCount.textContent = rows.length + (rows.length === 1 ? " record" : " records");
+  function renderKeys() {
+    el.keyCount.textContent = state.apiKeys.length + (state.apiKeys.length === 1 ? " key" : " keys");
+    if (!state.apiKeys.length) {
+      el.keyRows.innerHTML = '<div class="empty">No API keys yet.</div>';
+      return;
+    }
+    el.keyRows.innerHTML = state.apiKeys.map(renderKeyRow).join("");
+  }
+
+  function renderKeyRow(key) {
+    var status = key.active ? '<span class="badge teal">Active</span>' : '<span class="badge coral">Inactive</span>';
+    var secret = key.has_key ? '<span class="badge violet">Secret saved</span>' : '<span class="badge amber">No secret</span>';
+    return '' +
+      '<article class="key-row" data-id="' + escapeHtml(key.id) + '">' +
+        '<div class="row-main">' +
+          '<strong>' + escapeHtml(key.name) + '</strong>' +
+          '<span>' + escapeHtml(key.id) + '</span>' +
+        '</div>' +
+        '<div>' +
+          '<div class="badge-row"><span class="badge blue">' + escapeHtml(key.provider_label) + '</span>' + status + '</div>' +
+          '<span class="subtle">' + escapeHtml(key.model) + '</span>' +
+        '</div>' +
+        '<div>' +
+          '<div class="badge-row">' + secret + '</div>' +
+          '<span class="subtle">' + escapeHtml(key.assigned_count || 0) + ' assigned</span>' +
+        '</div>' +
+        '<div class="row-actions">' +
+          '<button class="ghost" type="button" data-action="edit-key">Edit</button>' +
+          '<button class="ghost danger" type="button" data-action="delete-key">Delete</button>' +
+        '</div>' +
+      '</article>';
+  }
+
+  function filteredDoctors() {
+    var q = state.query.trim().toLowerCase();
+    return state.rows.filter(function (row) {
+      var keyOk = state.keyFilter === "all" || row.assigned_api_key_id === state.keyFilter;
+      var hay = [row.name, row.email, row.doctor_id, row.assigned_api_key_name, row.ai_provider_label].join(" ").toLowerCase();
+      return keyOk && (!q || hay.indexOf(q) !== -1);
+    });
+  }
+
+  function renderDoctors() {
+    var rows = filteredDoctors();
+    el.doctorCount.textContent = rows.length + (rows.length === 1 ? " doctor" : " doctors");
     if (!rows.length) {
       el.doctorRows.innerHTML = '<div class="empty">No doctors match the current view.</div>';
       return;
@@ -960,35 +934,42 @@ export const ADMIN_JS = `(function () {
   }
 
   function renderDoctorRow(row) {
-    var percent = row.unlimited ? 100 : Math.max(0, Math.min(100, Math.round(((row.monthly_credits - row.remaining_credits) / Math.max(1, row.monthly_credits)) * 100)));
+    var monthlyPercent = percent(row.monthly_used, row.monthly_limit);
+    var dailyPercent = percent(row.daily_used, row.daily_limit);
     var statusBadge = row.active ? '<span class="badge teal">Active</span>' : '<span class="badge coral">Inactive</span>';
     var aiBadge = row.ai_enabled ? '<span class="badge teal">AI on</span>' : '<span class="badge coral">AI off</span>';
-    var keyBadge = row.has_active_provider_key ? '<span class="badge violet">Key saved</span>' : '<span class="badge amber">Key missing</span>';
+    var keyBadge = row.has_assigned_api_key && row.assigned_api_key_active ? '<span class="badge violet">Ready</span>' : '<span class="badge amber">Needs key</span>';
     return '' +
       '<article class="doctor-row" data-id="' + escapeHtml(row.doctor_id) + '">' +
-        '<div class="doctor-main">' +
-          '<strong>' + escapeHtml(row.name || "Dr") + '</strong>' +
-          '<span>' + escapeHtml(row.email || "No email") + '</span>' +
+        '<div class="row-main">' +
+          '<strong>' + escapeHtml(row.email || "No email") + '</strong>' +
           '<span>' + escapeHtml(row.doctor_id) + '</span>' +
-        '</div>' +
-        '<div>' +
           '<div class="badge-row">' + statusBadge + aiBadge + '</div>' +
-          '<span class="subtle">' + escapeHtml(row.plan_label) + '</span>' +
         '</div>' +
         '<div>' +
-          '<div class="badge-row"><span class="badge">' + escapeHtml(row.ai_provider_label) + '</span>' + keyBadge + '</div>' +
-          '<span class="subtle">' + escapeHtml(row.ai_model) + '</span>' +
+          '<div class="badge-row">' + keyBadge + '</div>' +
+          '<span class="subtle">' + escapeHtml(row.assigned_api_key_name || "No key assigned") + '</span>' +
+          '<span class="subtle">' + escapeHtml(row.ai_provider_label || "") + ' ' + escapeHtml(row.ai_model || "") + '</span>' +
         '</div>' +
-        '<div>' +
-          '<span class="subtle">' + escapeHtml(row.used_credits) + ' used / ' + escapeHtml(row.unlimited ? "unlimited" : row.monthly_credits) + '</span>' +
-          '<div class="progress" aria-hidden="true"><span style="width:' + percent + '%"></span></div>' +
-          '<div class="row-actions">' +
-            '<button class="ghost" type="button" data-action="logs">Logs</button>' +
-            '<button class="ghost" type="button" data-action="edit">Edit</button>' +
-            '<button class="ghost danger" type="button" data-action="delete">Delete</button>' +
-          '</div>' +
+        '<div class="usage-stack">' +
+          usageLine("Month", row.monthly_used, row.monthly_limit, monthlyPercent, "") +
+          usageLine("Today", row.daily_used, row.daily_limit, dailyPercent, "daily") +
+        '</div>' +
+        '<div class="row-actions">' +
+          '<button class="ghost" type="button" data-action="logs">Logs</button>' +
+          '<button class="ghost" type="button" data-action="edit-doctor">Edit</button>' +
+          '<button class="ghost danger" type="button" data-action="delete-doctor">Delete</button>' +
         '</div>' +
       '</article>';
+  }
+
+  function usageLine(label, used, limit, width, extraClass) {
+    return '<div class="usage-line"><span>' + escapeHtml(label) + ': ' + escapeHtml(used || 0) + ' / ' + escapeHtml(limit || 0) + '</span><div class="progress ' + extraClass + '"><span style="width:' + width + '%"></span></div></div>';
+  }
+
+  function percent(used, limit) {
+    if (!limit) return 0;
+    return Math.max(0, Math.min(100, Math.round(((used || 0) / limit) * 100)));
   }
 
   function renderCosts() {
@@ -999,57 +980,87 @@ export const ADMIN_JS = `(function () {
     el.costGrid.innerHTML = html;
   }
 
+  function findKey(id) {
+    return state.apiKeys.find(function (key) { return key.id === id; });
+  }
+
   function findDoctor(id) {
     return state.rows.find(function (row) { return row.doctor_id === id; });
-  }
-
-  function openDoctorDialog(row) {
-    state.editingId = row ? row.doctor_id : "";
-    el.doctorForm.reset();
-    el.doctorDialogMode.textContent = row ? "Edit" : "Create";
-    el.doctorDialogTitle.textContent = row ? row.name || "Doctor" : "New doctor";
-    el.doctorId.value = row ? row.doctor_id : "";
-    el.doctorName.value = row ? row.name || "" : "";
-    el.doctorEmail.value = row ? row.email || "" : "";
-    el.doctorPlan.value = row ? row.plan_name : firstKey(state.plans);
-    el.doctorSecret.value = "";
-    el.secretField.classList.toggle("hidden", !!row);
-    el.doctorActive.checked = row ? !!row.active : true;
-    el.doctorAiEnabled.checked = row ? !!row.ai_enabled : true;
-    setProvider(row ? row.ai_provider : "groq");
-    el.groqModel.value = row ? row.groq_model || defaultModel("groq") : defaultModel("groq");
-    el.geminiModel.value = row ? row.gemini_model || defaultModel("gemini") : defaultModel("gemini");
-    el.groqApiKey.value = "";
-    el.geminiApiKey.value = "";
-    el.clearGroqKey.checked = false;
-    el.clearGeminiKey.checked = false;
-    el.clearGroqWrap.classList.toggle("hidden", !row);
-    el.clearGeminiWrap.classList.toggle("hidden", !row);
-    el.groqKeyState.textContent = row && row.has_groq_key ? "Saved" : "No key";
-    el.geminiKeyState.textContent = row && row.has_gemini_key ? "Saved" : "No key";
-    el.addCredits.value = "";
-    el.setUsedCredits.value = "";
-    el.resetMonthly.checked = false;
-    el.doctorDialog.showModal();
-  }
-
-  function firstKey(obj) {
-    var keys = Object.keys(obj || {});
-    return keys[0] || "";
   }
 
   function defaultModel(provider) {
     return state.providers[provider] ? state.providers[provider].default_model : "";
   }
 
-  function setProvider(provider) {
-    var radio = document.querySelector('input[name="ai_provider"][value="' + provider + '"]');
-    if (radio) radio.checked = true;
+  function openKeyDialog(key) {
+    state.editingKeyId = key ? key.id : "";
+    el.keyForm.reset();
+    el.keyDialogMode.textContent = key ? "Edit" : "Create";
+    el.keyDialogTitle.textContent = key ? key.name : "API key";
+    el.keyId.value = key ? key.id : "";
+    el.keyName.value = key ? key.name || "" : "";
+    el.keyProvider.value = key ? key.provider : "groq";
+    el.keyModel.value = key ? key.model || defaultModel(el.keyProvider.value) : defaultModel(el.keyProvider.value);
+    el.keySecret.value = "";
+    el.keySecret.required = !key;
+    el.keySecret.placeholder = key ? "Paste a new key to replace saved secret" : "Paste key";
+    el.keyActive.checked = key ? !!key.active : true;
+    el.clearKeySecret.checked = false;
+    el.clearKeyWrap.classList.toggle("hidden", !key);
+    el.keyDialog.showModal();
   }
 
-  function selectedProvider() {
-    var checked = document.querySelector('input[name="ai_provider"]:checked');
-    return checked ? checked.value : "groq";
+  function openDoctorDialog(row) {
+    state.editingDoctorId = row ? row.doctor_id : "";
+    el.doctorForm.reset();
+    el.doctorDialogMode.textContent = row ? "Edit" : "Create";
+    el.doctorDialogTitle.textContent = row ? row.email || "Doctor" : "Doctor";
+    el.doctorId.value = row ? row.doctor_id : "";
+    el.doctorEmail.value = row ? row.email || "" : "";
+    el.doctorAssignedKey.value = row ? row.assigned_api_key_id || "" : firstKeyId();
+    el.doctorMonthlyLimit.value = row ? row.monthly_limit || 0 : state.defaults.monthly_limit || 500;
+    el.doctorDailyLimit.value = row ? row.daily_limit || 0 : state.defaults.daily_limit || 50;
+    el.doctorActive.checked = row ? !!row.active : true;
+    el.doctorAiEnabled.checked = row ? !!row.ai_enabled : true;
+    el.setMonthlyUsed.value = "";
+    el.setDailyUsed.value = "";
+    el.resetMonthly.checked = false;
+    el.resetDaily.checked = false;
+    el.doctorUsageTools.classList.toggle("hidden", !row);
+    el.doctorDialog.showModal();
+  }
+
+  function firstKeyId() {
+    return state.apiKeys[0] ? state.apiKeys[0].id : "";
+  }
+
+  async function saveKey(event) {
+    event.preventDefault();
+    var button = el.keyForm.querySelector('button[type="submit"]');
+    setBusy(button, true);
+    try {
+      var body = {
+        name: el.keyName.value.trim(),
+        provider: el.keyProvider.value,
+        model: el.keyModel.value.trim(),
+        active: el.keyActive.checked
+      };
+      if (el.keySecret.value.trim()) body.api_key = el.keySecret.value.trim();
+      if (state.editingKeyId && el.clearKeySecret.checked) body.clear_api_key = true;
+
+      if (state.editingKeyId) {
+        await apiFetch("/api/admin/api-keys/" + encodeURIComponent(state.editingKeyId), { method: "PATCH", body: body });
+      } else {
+        await apiFetch("/api/admin/api-keys", { method: "POST", body: body });
+      }
+      el.keyDialog.close();
+      await loadData();
+      showToast("API key saved");
+    } catch (error) {
+      showToast(error.message, true);
+    } finally {
+      setBusy(button, false);
+    }
   }
 
   async function saveDoctor(event) {
@@ -1058,34 +1069,30 @@ export const ADMIN_JS = `(function () {
     setBusy(button, true);
     try {
       var body = {
-        name: el.doctorName.value.trim(),
         email: el.doctorEmail.value.trim(),
-        plan_name: el.doctorPlan.value,
+        assigned_api_key_id: el.doctorAssignedKey.value,
+        monthly_limit: parseInt(el.doctorMonthlyLimit.value, 10) || 0,
+        daily_limit: parseInt(el.doctorDailyLimit.value, 10) || 0,
         active: el.doctorActive.checked,
-        ai_enabled: el.doctorAiEnabled.checked,
-        ai_provider: selectedProvider(),
-        groq_model: el.groqModel.value.trim(),
-        gemini_model: el.geminiModel.value.trim()
+        ai_enabled: el.doctorAiEnabled.checked
       };
-      if (!state.editingId && el.doctorSecret.value.trim()) body.secret = el.doctorSecret.value.trim();
-      if (el.groqApiKey.value.trim()) body.groq_api_key = el.groqApiKey.value.trim();
-      if (el.geminiApiKey.value.trim()) body.gemini_api_key = el.geminiApiKey.value.trim();
-      if (state.editingId && el.clearGroqKey.checked) body.clear_groq_api_key = true;
-      if (state.editingId && el.clearGeminiKey.checked) body.clear_gemini_api_key = true;
-      if (el.addCredits.value !== "") body.add_credits = parseInt(el.addCredits.value, 10) || 0;
-      if (el.setUsedCredits.value !== "") body.set_used_credits = parseInt(el.setUsedCredits.value, 10) || 0;
-      if (el.resetMonthly.checked) body.reset_monthly = true;
+      if (state.editingDoctorId) {
+        if (el.setMonthlyUsed.value !== "") body.set_monthly_used = parseInt(el.setMonthlyUsed.value, 10) || 0;
+        if (el.setDailyUsed.value !== "") body.set_daily_used = parseInt(el.setDailyUsed.value, 10) || 0;
+        if (el.resetMonthly.checked) body.reset_monthly = true;
+        if (el.resetDaily.checked) body.reset_daily = true;
+      }
 
       var result;
-      if (state.editingId) {
-        result = await apiFetch("/api/admin/doctors/" + encodeURIComponent(state.editingId), { method: "PATCH", body: body });
+      if (state.editingDoctorId) {
+        result = await apiFetch("/api/admin/doctors/" + encodeURIComponent(state.editingDoctorId), { method: "PATCH", body: body });
       } else {
         result = await apiFetch("/api/admin/doctors", { method: "POST", body: body });
       }
       el.doctorDialog.close();
       await loadData();
       showToast("Doctor saved");
-      if (!state.editingId && result.doctor) showCredentials(result.doctor);
+      if (!state.editingDoctorId && result.doctor) showCredentials(result.doctor);
     } catch (error) {
       showToast(error.message, true);
     } finally {
@@ -1099,9 +1106,21 @@ export const ADMIN_JS = `(function () {
     el.credentialsDialog.showModal();
   }
 
+  async function deleteKey(id) {
+    var key = findKey(id);
+    if (!window.confirm("Delete " + ((key && key.name) || "this API key") + "?")) return;
+    try {
+      await apiFetch("/api/admin/api-keys/" + encodeURIComponent(id), { method: "DELETE" });
+      await loadData();
+      showToast("API key deleted");
+    } catch (error) {
+      showToast(error.message, true);
+    }
+  }
+
   async function deleteDoctor(id) {
     var row = findDoctor(id);
-    if (!window.confirm("Delete " + ((row && row.name) || "this doctor") + "?")) return;
+    if (!window.confirm("Delete " + ((row && row.email) || "this doctor") + "?")) return;
     try {
       await apiFetch("/api/admin/doctors/" + encodeURIComponent(id), { method: "DELETE" });
       await loadData();
@@ -1113,7 +1132,7 @@ export const ADMIN_JS = `(function () {
 
   async function openLogs(id) {
     var row = findDoctor(id);
-    el.logsTitle.textContent = row ? row.name || "Logs" : "Logs";
+    el.logsTitle.textContent = row ? row.email || "Logs" : "Logs";
     el.logsRows.innerHTML = '<div class="empty">Loading logs.</div>';
     el.logsDialog.showModal();
     try {
@@ -1146,7 +1165,7 @@ export const ADMIN_JS = `(function () {
       var data = await apiFetch("/api/admin/credit-costs", { method: "PUT", body: body });
       state.creditCosts = data.credit_costs || body;
       renderCosts();
-      showToast("Credit costs saved");
+      showToast("Action costs saved");
     } catch (error) {
       showToast(error.message, true);
     } finally {
@@ -1211,18 +1230,34 @@ export const ADMIN_JS = `(function () {
       showApp(false);
     });
 
+    el.newKeyButton.addEventListener("click", function () { openKeyDialog(null); });
     el.newDoctorButton.addEventListener("click", function () { openDoctorDialog(null); });
+    el.keyForm.addEventListener("submit", saveKey);
     el.doctorForm.addEventListener("submit", saveDoctor);
     el.saveCostsButton.addEventListener("click", saveCosts);
 
-    el.searchInput.addEventListener("input", function () {
-      state.query = el.searchInput.value;
-      renderRows();
+    el.keyProvider.addEventListener("change", function () {
+      if (!state.editingKeyId) el.keyModel.value = defaultModel(el.keyProvider.value);
     });
 
-    el.providerFilter.addEventListener("change", function () {
-      state.provider = el.providerFilter.value;
-      renderRows();
+    el.searchInput.addEventListener("input", function () {
+      state.query = el.searchInput.value;
+      renderDoctors();
+    });
+
+    el.keyFilter.addEventListener("change", function () {
+      state.keyFilter = el.keyFilter.value;
+      renderDoctors();
+    });
+
+    el.keyRows.addEventListener("click", function (event) {
+      var button = event.target.closest("button[data-action]");
+      if (!button) return;
+      var row = event.target.closest(".key-row");
+      if (!row) return;
+      var id = row.dataset.id;
+      if (button.dataset.action === "edit-key") openKeyDialog(findKey(id));
+      if (button.dataset.action === "delete-key") deleteKey(id);
     });
 
     el.doctorRows.addEventListener("click", function (event) {
@@ -1231,9 +1266,9 @@ export const ADMIN_JS = `(function () {
       var row = event.target.closest(".doctor-row");
       if (!row) return;
       var id = row.dataset.id;
-      if (button.dataset.action === "edit") openDoctorDialog(findDoctor(id));
+      if (button.dataset.action === "edit-doctor") openDoctorDialog(findDoctor(id));
       if (button.dataset.action === "logs") openLogs(id);
-      if (button.dataset.action === "delete") deleteDoctor(id);
+      if (button.dataset.action === "delete-doctor") deleteDoctor(id);
     });
 
     document.addEventListener("click", function (event) {
@@ -1262,14 +1297,15 @@ export const ADMIN_JS = `(function () {
   function init() {
     [
       "authPanel", "authForm", "adminToken", "app", "refreshButton", "logoutButton",
-      "newDoctorButton", "metrics", "providerFilter", "searchInput", "doctorCount",
-      "doctorRows", "costGrid", "saveCostsButton", "toast", "doctorDialog",
+      "newKeyButton", "newDoctorButton", "metrics", "keyCount", "keyRows",
+      "keyFilter", "searchInput", "doctorCount", "doctorRows", "costGrid",
+      "saveCostsButton", "toast", "keyDialog", "keyForm", "keyDialogMode",
+      "keyDialogTitle", "keyId", "keyName", "keyProvider", "keyModel",
+      "keySecret", "keyActive", "clearKeyWrap", "clearKeySecret", "doctorDialog",
       "doctorForm", "doctorDialogMode", "doctorDialogTitle", "doctorId",
-      "doctorName", "doctorEmail", "doctorPlan", "secretField", "doctorSecret",
-      "doctorActive", "doctorAiEnabled", "groqApiKey", "geminiApiKey",
-      "groqModel", "geminiModel", "groqKeyState", "geminiKeyState",
-      "clearGroqWrap", "clearGeminiWrap", "clearGroqKey", "clearGeminiKey",
-      "addCredits", "setUsedCredits", "resetMonthly", "logsDialog", "logsTitle",
+      "doctorEmail", "doctorAssignedKey", "doctorMonthlyLimit", "doctorDailyLimit",
+      "doctorActive", "doctorAiEnabled", "doctorUsageTools", "setMonthlyUsed",
+      "setDailyUsed", "resetMonthly", "resetDaily", "logsDialog", "logsTitle",
       "logsRows", "credentialsDialog", "createdDoctorId", "createdDoctorSecret"
     ].forEach(function (id) {
       el[id] = byId(id);

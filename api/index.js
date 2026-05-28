@@ -1,5 +1,5 @@
-// MediSmart AI Credits API - Single Vercel serverless function
-// Handles the admin panel, doctor routes, credits, and AI provider proxying.
+// MediSmart AI Credits API - Single Render/Vercel-compatible Node handler.
+// Handles the admin panel, doctor auth, usage limits, and Groq/Gemini proxying.
 
 import { Redis } from "@upstash/redis";
 import crypto from "node:crypto";
@@ -21,11 +21,13 @@ const AI_PROVIDERS = {
 const GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions";
 const GEMINI_GENERATE_URL = "https://generativelanguage.googleapis.com/v1beta/models";
 
-const PLANS = {
-  starter: { label: "Starter AI", monthly_credits: 50, unlimited: false },
-  pro: { label: "Pro AI", monthly_credits: 150, unlimited: false },
-  premium: { label: "Premium AI", monthly_credits: 500, unlimited: false },
-  enterprise: { label: "Enterprise", monthly_credits: 999999, unlimited: true },
+const DEFAULT_LIMITS = {
+  monthly_limit: 500,
+  daily_limit: 50,
+};
+
+const COMPAT_PLANS = {
+  custom: { label: "Custom limits", monthly_credits: DEFAULT_LIMITS.monthly_limit, unlimited: false },
 };
 
 const DEFAULT_COSTS = {
@@ -40,6 +42,7 @@ const DEFAULT_COSTS = {
 
 // ---------- helpers ----------
 function nowIso() { return new Date().toISOString(); }
+function today() { return new Date().toISOString().slice(0, 10); }
 
 function nextRenewalDate(from = new Date()) {
   const d = new Date(from);
@@ -83,16 +86,15 @@ function normalizeProvider(provider) {
 }
 
 function cleanModel(value, provider) {
+  const cleanProvider = normalizeProvider(provider);
   const model = String(value || "").trim();
-  return model || AI_PROVIDERS[provider].default_model;
+  return model || AI_PROVIDERS[cleanProvider].default_model;
 }
 
-function providerKeyField(provider) {
-  return provider === "gemini" ? "gemini_api_key" : "groq_api_key";
-}
-
-function providerModelField(provider) {
-  return provider === "gemini" ? "gemini_model" : "groq_model";
+function toLimit(value, fallback) {
+  const parsed = parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, parsed);
 }
 
 function providerConfig() {
@@ -102,20 +104,9 @@ function providerConfig() {
   }]));
 }
 
-function activeProviderKey(doctor) {
-  const provider = normalizeProvider(doctor.ai_provider);
-  return String(doctor[providerKeyField(provider)] || "").trim();
-}
-
-function activeProviderModel(doctor) {
-  const provider = normalizeProvider(doctor.ai_provider);
-  return cleanModel(doctor[providerModelField(provider)], provider);
-}
-
 async function getAdminToken() {
   let tok = await redis.get("admin:token");
   if (!tok) {
-    // Use env var if provided; otherwise generate one and persist.
     tok = process.env.ADMIN_TOKEN || crypto.randomBytes(24).toString("hex");
     await redis.set("admin:token", tok);
   }
@@ -137,6 +128,79 @@ async function verifyDoctor(req) {
   return await getDoctor(doctorId);
 }
 
+// ---------- named AI keys ----------
+async function getApiKey(keyId) {
+  if (!keyId) return null;
+  return await redis.get(`api_key:${keyId}`);
+}
+
+async function saveApiKey(apiKey) {
+  apiKey.updated_at = nowIso();
+  await redis.set(`api_key:${apiKey.id}`, apiKey);
+}
+
+async function listApiKeyIds() {
+  return (await redis.smembers("api_keys:index")) || [];
+}
+
+async function indexApiKey(keyId) {
+  await redis.sadd("api_keys:index", keyId);
+}
+
+async function removeApiKey(keyId) {
+  await redis.del(`api_key:${keyId}`);
+  await redis.srem("api_keys:index", keyId);
+}
+
+async function listApiKeys() {
+  const ids = await listApiKeyIds();
+  const rows = [];
+  for (const id of ids) {
+    const key = await getApiKey(id);
+    if (key) {
+      const fresh = ensureApiKeyDefaults({ ...key });
+      await saveApiKey(fresh);
+      rows.push(fresh);
+    }
+  }
+  return rows.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+}
+
+function ensureApiKeyDefaults(apiKey) {
+  apiKey.id = apiKey.id || uuid();
+  apiKey.name = String(apiKey.name || "AI Key").trim() || "AI Key";
+  apiKey.provider = normalizeProvider(apiKey.provider);
+  apiKey.model = cleanModel(apiKey.model, apiKey.provider);
+  if (typeof apiKey.api_key !== "string") apiKey.api_key = "";
+  if (typeof apiKey.active !== "boolean") apiKey.active = true;
+  if (!apiKey.created_at) apiKey.created_at = nowIso();
+  return apiKey;
+}
+
+function publicApiKeyState(apiKey, assignedCount = 0) {
+  const provider = normalizeProvider(apiKey.provider);
+  return {
+    id: apiKey.id,
+    name: apiKey.name || "",
+    provider,
+    provider_label: AI_PROVIDERS[provider].label,
+    model: cleanModel(apiKey.model, provider),
+    active: !!apiKey.active,
+    has_key: Boolean(apiKey.api_key),
+    assigned_count: assignedCount,
+    created_at: apiKey.created_at,
+    updated_at: apiKey.updated_at,
+  };
+}
+
+function assignedCounts(doctors) {
+  const counts = {};
+  for (const doctor of doctors) {
+    if (doctor.assigned_api_key_id) counts[doctor.assigned_api_key_id] = (counts[doctor.assigned_api_key_id] || 0) + 1;
+  }
+  return counts;
+}
+
 // ---------- doctor records ----------
 async function getDoctor(doctorId) {
   const data = await redis.get(`doctor:${doctorId}`);
@@ -156,60 +220,97 @@ async function indexDoctor(doctorId) {
   await redis.sadd("doctors:index", doctorId);
 }
 
-async function ensureDoctorDefaults(doctor) {
-  if (!PLANS[doctor.plan_name]) doctor.plan_name = "starter";
-  const plan = PLANS[doctor.plan_name] || PLANS.starter;
-  if (typeof doctor.monthly_credits !== "number") doctor.monthly_credits = plan.monthly_credits;
-  if (typeof doctor.used_credits !== "number") doctor.used_credits = 0;
-  if (typeof doctor.unlimited !== "boolean") doctor.unlimited = plan.unlimited;
+async function listDoctors() {
+  const ids = await listDoctorIds();
+  const rows = [];
+  for (const id of ids) {
+    const doctor = await getDoctor(id);
+    if (doctor) {
+      const fresh = ensureDoctorDefaults({ ...doctor });
+      await saveDoctor(fresh);
+      rows.push(fresh);
+    }
+  }
+  return rows.sort((a, b) => (a.email || "").localeCompare(b.email || ""));
+}
+
+function displayNameFromEmail(email) {
+  const clean = String(email || "").trim();
+  if (!clean) return "Doctor";
+  return clean.split("@")[0].replace(/[._-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function ensureDoctorDefaults(doctor) {
+  doctor.id = doctor.id || uuid();
+  doctor.email = String(doctor.email || "").trim();
+  doctor.name = String(doctor.name || displayNameFromEmail(doctor.email)).trim() || displayNameFromEmail(doctor.email);
+  if (!doctor.secret) doctor.secret = crypto.randomBytes(12).toString("hex");
+
+  doctor.monthly_limit = toLimit(doctor.monthly_limit ?? doctor.monthly_credits, DEFAULT_LIMITS.monthly_limit);
+  doctor.daily_limit = toLimit(doctor.daily_limit, DEFAULT_LIMITS.daily_limit);
+  doctor.monthly_used = toLimit(doctor.monthly_used ?? doctor.used_credits, 0);
+  doctor.daily_used = toLimit(doctor.daily_used, 0);
+  doctor.assigned_api_key_id = String(doctor.assigned_api_key_id || doctor.api_key_id || "").trim();
+
   if (typeof doctor.ai_enabled !== "boolean") doctor.ai_enabled = true;
   if (typeof doctor.active !== "boolean") doctor.active = true;
-  doctor.ai_provider = normalizeProvider(doctor.ai_provider);
-  doctor.groq_model = cleanModel(doctor.groq_model, "groq");
-  doctor.gemini_model = cleanModel(doctor.gemini_model, "gemini");
-  if (typeof doctor.groq_api_key !== "string") doctor.groq_api_key = "";
-  if (typeof doctor.gemini_api_key !== "string") doctor.gemini_api_key = "";
   if (!doctor.renewal_date) doctor.renewal_date = nextRenewalDate();
+  if (!doctor.daily_usage_date) doctor.daily_usage_date = today();
   if (!doctor.created_at) doctor.created_at = nowIso();
-  // Monthly reset
-  if (doctor.renewal_date && doctor.renewal_date <= new Date().toISOString().slice(0, 10)) {
-    doctor.used_credits = 0;
+
+  if (doctor.renewal_date && doctor.renewal_date <= today()) {
+    doctor.monthly_used = 0;
     doctor.renewal_date = nextRenewalDate();
   }
+  if (doctor.daily_usage_date !== today()) {
+    doctor.daily_used = 0;
+    doctor.daily_usage_date = today();
+  }
+
+  // Compatibility aliases for older doctor clients.
+  doctor.monthly_credits = doctor.monthly_limit;
+  doctor.used_credits = doctor.monthly_used;
+  doctor.unlimited = false;
   return doctor;
 }
 
-function publicDoctorState(doctor) {
-  const plan = PLANS[doctor.plan_name] || PLANS.starter;
-  const monthly = doctor.monthly_credits || 0;
-  const used = doctor.used_credits || 0;
-  const unlimited = !!doctor.unlimited;
-  const remaining = unlimited ? 999999 : Math.max(0, monthly - used);
-  const provider = normalizeProvider(doctor.ai_provider);
-  const groqModel = cleanModel(doctor.groq_model, "groq");
-  const geminiModel = cleanModel(doctor.gemini_model, "gemini");
+function publicDoctorState(doctor, apiKey = null) {
+  const monthlyRemaining = Math.max(0, (doctor.monthly_limit || 0) - (doctor.monthly_used || 0));
+  const dailyRemaining = Math.max(0, (doctor.daily_limit || 0) - (doctor.daily_used || 0));
   return {
     doctor_id: doctor.id,
     name: doctor.name || "",
     email: doctor.email || "",
-    plan_name: doctor.plan_name,
-    plan_label: plan.label,
-    monthly_credits: monthly,
-    used_credits: used,
-    remaining_credits: remaining,
-    renewal_date: doctor.renewal_date,
     active: !!doctor.active,
     ai_enabled: !!doctor.ai_enabled,
-    unlimited,
-    ai_provider: provider,
-    ai_provider_label: AI_PROVIDERS[provider].label,
-    ai_model: provider === "gemini" ? geminiModel : groqModel,
-    groq_model: groqModel,
-    gemini_model: geminiModel,
-    has_groq_key: Boolean(doctor.groq_api_key),
-    has_gemini_key: Boolean(doctor.gemini_api_key),
-    has_active_provider_key: provider === "gemini" ? Boolean(doctor.gemini_api_key) : Boolean(doctor.groq_api_key),
+    assigned_api_key_id: doctor.assigned_api_key_id || "",
+    assigned_api_key_name: apiKey?.name || "",
+    assigned_api_key_active: !!apiKey?.active,
+    has_assigned_api_key: Boolean(apiKey?.api_key),
+    ai_provider: apiKey ? normalizeProvider(apiKey.provider) : "",
+    ai_provider_label: apiKey ? AI_PROVIDERS[normalizeProvider(apiKey.provider)].label : "",
+    ai_model: apiKey ? cleanModel(apiKey.model, apiKey.provider) : "",
+    monthly_limit: doctor.monthly_limit || 0,
+    monthly_used: doctor.monthly_used || 0,
+    monthly_remaining: monthlyRemaining,
+    daily_limit: doctor.daily_limit || 0,
+    daily_used: doctor.daily_used || 0,
+    daily_remaining: dailyRemaining,
+    daily_usage_date: doctor.daily_usage_date,
+    renewal_date: doctor.renewal_date,
+    // Compatibility aliases.
+    plan_name: "custom",
+    plan_label: "Custom",
+    monthly_credits: doctor.monthly_limit || 0,
+    used_credits: doctor.monthly_used || 0,
+    remaining_credits: monthlyRemaining,
+    unlimited: false,
   };
+}
+
+async function publicDoctorWithAssignedKey(doctor) {
+  const apiKey = await getApiKey(doctor.assigned_api_key_id);
+  return publicDoctorState(doctor, apiKey);
 }
 
 async function getCreditCosts() {
@@ -221,22 +322,25 @@ function creditCostFor(costs, action) {
   return costs[action] ?? 1;
 }
 
-function applyPlan(doctor, planName) {
-  if (!planName || !PLANS[planName]) return;
-  const plan = PLANS[planName];
-  doctor.plan_name = planName;
-  doctor.monthly_credits = plan.monthly_credits;
-  doctor.unlimited = plan.unlimited;
-}
-
-function applyProviderUpdate(doctor, body) {
-  if (body.ai_provider !== undefined) doctor.ai_provider = normalizeProvider(body.ai_provider);
-  if (body.groq_model !== undefined) doctor.groq_model = cleanModel(body.groq_model, "groq");
-  if (body.gemini_model !== undefined) doctor.gemini_model = cleanModel(body.gemini_model, "gemini");
-  if (body.groq_api_key !== undefined) doctor.groq_api_key = String(body.groq_api_key || "").trim();
-  if (body.gemini_api_key !== undefined) doctor.gemini_api_key = String(body.gemini_api_key || "").trim();
-  if (body.clear_groq_api_key === true) doctor.groq_api_key = "";
-  if (body.clear_gemini_api_key === true) doctor.gemini_api_key = "";
+function applyDoctorUpdate(doctor, body) {
+  if (body.email !== undefined) doctor.email = String(body.email || "").trim();
+  if (body.name !== undefined) doctor.name = String(body.name || "").trim() || displayNameFromEmail(doctor.email);
+  if (body.monthly_limit !== undefined) doctor.monthly_limit = toLimit(body.monthly_limit, doctor.monthly_limit || DEFAULT_LIMITS.monthly_limit);
+  if (body.daily_limit !== undefined) doctor.daily_limit = toLimit(body.daily_limit, doctor.daily_limit || DEFAULT_LIMITS.daily_limit);
+  if (body.assigned_api_key_id !== undefined) doctor.assigned_api_key_id = String(body.assigned_api_key_id || "").trim();
+  if (body.api_key_id !== undefined) doctor.assigned_api_key_id = String(body.api_key_id || "").trim();
+  if (body.ai_enabled !== undefined) doctor.ai_enabled = !!body.ai_enabled;
+  if (body.active !== undefined) doctor.active = !!body.active;
+  if (typeof body.set_monthly_used === "number") doctor.monthly_used = Math.max(0, parseInt(body.set_monthly_used, 10));
+  if (typeof body.set_daily_used === "number") doctor.daily_used = Math.max(0, parseInt(body.set_daily_used, 10));
+  if (body.reset_monthly === true) {
+    doctor.monthly_used = 0;
+    doctor.renewal_date = nextRenewalDate();
+  }
+  if (body.reset_daily === true) {
+    doctor.daily_used = 0;
+    doctor.daily_usage_date = today();
+  }
 }
 
 // ---------- credit logs ----------
@@ -403,11 +507,11 @@ export default async function handler(req, res) {
 
     // ---- public ----
     if (path === "/api" || path === "/api/health") {
-      return ok(res, { ok: true, service: "medismart-ai-credits", providers: providerConfig() });
+      return ok(res, { ok: true, service: "medismart-ai-credits", providers: providerConfig(), default_limits: DEFAULT_LIMITS });
     }
 
     if (path === "/api/plans") {
-      return ok(res, { plans: PLANS, credit_costs: await getCreditCosts(), providers: providerConfig() });
+      return ok(res, { plans: COMPAT_PLANS, credit_costs: await getCreditCosts(), providers: providerConfig(), default_limits: DEFAULT_LIMITS });
     }
 
     // ---- doctor authentication: exchange uuid+secret for session token ----
@@ -418,20 +522,20 @@ export default async function handler(req, res) {
       const doctor = await getDoctor(doctor_id);
       if (!doctor || !doctor.active) return err(res, 401, "Compte inactif ou inconnu");
       if (doctor.secret !== secret) return err(res, 401, "Identifiants incorrects");
-      const fresh = await ensureDoctorDefaults({ ...doctor });
+      const fresh = ensureDoctorDefaults({ ...doctor });
       await saveDoctor(fresh);
       const token = uuid();
-      await redis.set(`doctor:token:${token}`, fresh.id, { ex: 60 * 60 * 24 * 7 }); // 7 days
-      return ok(res, { token, doctor: publicDoctorState(fresh) });
+      await redis.set(`doctor:token:${token}`, fresh.id, { ex: 60 * 60 * 24 * 7 });
+      return ok(res, { token, doctor: await publicDoctorWithAssignedKey(fresh) });
     }
 
     // ---- doctor: their own subscription ----
     if (path === "/api/me/subscription") {
       const doctor = await verifyDoctor(req);
       if (!doctor) return err(res, 401, "Token medecin invalide");
-      const fresh = await ensureDoctorDefaults({ ...doctor });
+      const fresh = ensureDoctorDefaults({ ...doctor });
       await saveDoctor(fresh);
-      return ok(res, { ...publicDoctorState(fresh), plans: PLANS, credit_costs: await getCreditCosts(), providers: providerConfig() });
+      return ok(res, { ...(await publicDoctorWithAssignedKey(fresh)), plans: COMPAT_PLANS, credit_costs: await getCreditCosts(), providers: providerConfig() });
     }
 
     if (path === "/api/me/logs") {
@@ -439,7 +543,6 @@ export default async function handler(req, res) {
       if (!doctor) return err(res, 401, "Token medecin invalide");
       const logs = await readLogs(doctor.id, 100);
       const total_used = logs.reduce((s, l) => s + (l.credits_used || 0), 0);
-      const cache_hits = logs.filter((l) => l.cached).length;
       const byDay = {};
       for (const l of logs) {
         const day = (l.created_at || "").slice(0, 10);
@@ -447,53 +550,62 @@ export default async function handler(req, res) {
       }
       const daily = Object.entries(byDay).map(([day, credits]) => ({ day, credits }))
         .sort((a, b) => b.day.localeCompare(a.day)).slice(0, 30);
-      return ok(res, { rows: logs.slice(0, 50), total_used, cache_hits, daily });
+      return ok(res, { rows: logs.slice(0, 50), total_used, daily });
     }
 
-    // ---- doctor: AI chat (proxies to Groq or Gemini using doctor's stored key) ----
+    // ---- doctor: AI chat using assigned named key ----
     if (path === "/api/me/ai/chat") {
       if (req.method !== "POST") return err(res, 405, "Method not allowed");
       const doctor = await verifyDoctor(req);
       if (!doctor) return err(res, 401, "Token medecin invalide");
-      const fresh = await ensureDoctorDefaults({ ...doctor });
+      const fresh = ensureDoctorDefaults({ ...doctor });
       if (!fresh.active || !fresh.ai_enabled) return err(res, 403, "IA desactivee pour ce compte");
+
+      const assignedKey = ensureApiKeyDefaults({ ...(await getApiKey(fresh.assigned_api_key_id) || {}) });
+      if (!fresh.assigned_api_key_id) return err(res, 409, "Aucune cle API assignee a ce medecin.");
+      if (!assignedKey.id || assignedKey.id !== fresh.assigned_api_key_id) return err(res, 409, "Cle API assignee introuvable.");
+      if (!assignedKey.active) return err(res, 409, `La cle API "${assignedKey.name}" est inactive.`);
+      if (!assignedKey.api_key) return err(res, 409, `La cle API "${assignedKey.name}" n'a pas de secret enregistre.`);
+
       const costs = await getCreditCosts();
       const body = await readJson(req);
       const action = (body.action_type || "chat").toString();
       const cost = creditCostFor(costs, action);
-      const remaining = fresh.unlimited ? 999999 : Math.max(0, (fresh.monthly_credits || 0) - (fresh.used_credits || 0));
-      if (!fresh.unlimited && remaining < cost) return err(res, 402, "Credits IA insuffisants");
-
-      const provider = normalizeProvider(fresh.ai_provider);
-      const providerLabel = AI_PROVIDERS[provider].label;
-      const apiKey = activeProviderKey(fresh);
-      const model = activeProviderModel(fresh);
-      if (!apiKey) return err(res, 409, `Cle ${providerLabel} non assignee. Contactez l'administrateur.`);
+      const monthlyRemaining = Math.max(0, (fresh.monthly_limit || 0) - (fresh.monthly_used || 0));
+      const dailyRemaining = Math.max(0, (fresh.daily_limit || 0) - (fresh.daily_used || 0));
+      if (monthlyRemaining < cost) return err(res, 402, "Limite mensuelle atteinte");
+      if (dailyRemaining < cost) return err(res, 429, "Limite journaliere atteinte");
 
       const messages = normalizeMessages(body);
       if (!messages.length) return err(res, 400, "Message requis");
       const maxTokens = Math.min(4096, Math.max(64, parseInt(body.max_tokens || 512, 10)));
+      const provider = normalizeProvider(assignedKey.provider);
+      const model = cleanModel(assignedKey.model, provider);
+      const providerLabel = AI_PROVIDERS[provider].label;
 
       let assistantText = "";
       try {
-        assistantText = await callProviderChat({ provider, apiKey, model, messages, maxTokens });
+        assistantText = await callProviderChat({ provider, apiKey: assignedKey.api_key, model, messages, maxTokens });
       } catch (e) {
-        await logCreditAction(fresh.id, action, 0, false, false, `${providerLabel}: ${e.message}`);
+        await logCreditAction(fresh.id, action, 0, false, false, `${assignedKey.name}: ${e.message}`);
         return err(res, 502, `Erreur ${providerLabel}: ${e.message}`);
       }
 
-      if (!fresh.unlimited) {
-        fresh.used_credits = (fresh.used_credits || 0) + cost;
-      }
+      fresh.monthly_used = (fresh.monthly_used || 0) + cost;
+      fresh.daily_used = (fresh.daily_used || 0) + cost;
+      fresh.daily_usage_date = today();
       await saveDoctor(fresh);
-      await logCreditAction(fresh.id, action, fresh.unlimited ? 0 : cost, true, false, `${providerLabel} ${model}`);
+      await logCreditAction(fresh.id, action, cost, true, false, `${assignedKey.name} (${providerLabel} ${model})`);
 
       return ok(res, {
         content: assistantText,
         provider,
         model,
-        credits_used: fresh.unlimited ? 0 : cost,
-        credits_remaining: fresh.unlimited ? 999999 : Math.max(0, fresh.monthly_credits - fresh.used_credits),
+        api_key_name: assignedKey.name,
+        credits_used: cost,
+        monthly_remaining: Math.max(0, fresh.monthly_limit - fresh.monthly_used),
+        daily_remaining: Math.max(0, fresh.daily_limit - fresh.daily_used),
+        credits_remaining: Math.max(0, fresh.monthly_limit - fresh.monthly_used),
         safety_note: "Analyse IA a verifier par le medecin. Aucun diagnostic ou prescription automatique.",
       });
     }
@@ -505,79 +617,113 @@ export default async function handler(req, res) {
       if (!(await verifyAdmin(req))) return err(res, 401, "Token Super Admin invalide");
 
       if (path === "/api/admin/health") {
-        return ok(res, { ok: true, doctors: (await listDoctorIds()).length, providers: providerConfig() });
+        return ok(res, {
+          ok: true,
+          doctors: (await listDoctorIds()).length,
+          api_keys: (await listApiKeyIds()).length,
+          providers: providerConfig(),
+        });
       }
 
       if (path === "/api/admin/providers") {
         return ok(res, { providers: providerConfig() });
       }
 
-      // List all doctors (no patient data)
+      // Named API keys
+      if (path === "/api/admin/api-keys" && req.method === "GET") {
+        const doctors = await listDoctors();
+        const counts = assignedCounts(doctors);
+        const keys = await listApiKeys();
+        return ok(res, { rows: keys.map((key) => publicApiKeyState(key, counts[key.id] || 0)), providers: providerConfig() });
+      }
+
+      if (path === "/api/admin/api-keys" && req.method === "POST") {
+        const body = await readJson(req);
+        if (!String(body.name || "").trim()) return err(res, 400, "Nom de cle requis");
+        if (!String(body.api_key || "").trim()) return err(res, 400, "Secret API requis");
+        const provider = normalizeProvider(body.provider);
+        const apiKey = ensureApiKeyDefaults({
+          id: uuid(),
+          name: String(body.name || "").trim(),
+          provider,
+          model: cleanModel(body.model, provider),
+          api_key: String(body.api_key || "").trim(),
+          active: body.active !== false,
+        });
+        await saveApiKey(apiKey);
+        await indexApiKey(apiKey.id);
+        return ok(res, { api_key: publicApiKeyState(apiKey) }, 201);
+      }
+
+      const apiKeyMatch = path.match(/^\/api\/admin\/api-keys\/([a-f0-9-]+)$/);
+      if (apiKeyMatch && (req.method === "PUT" || req.method === "PATCH")) {
+        const keyId = apiKeyMatch[1];
+        const apiKey = await getApiKey(keyId);
+        if (!apiKey) return err(res, 404, "Cle API introuvable");
+        const fresh = ensureApiKeyDefaults({ ...apiKey });
+        const body = await readJson(req);
+        if (body.name !== undefined) fresh.name = String(body.name || "").trim() || fresh.name;
+        if (body.provider !== undefined) fresh.provider = normalizeProvider(body.provider);
+        if (body.model !== undefined) fresh.model = cleanModel(body.model, fresh.provider);
+        if (body.api_key !== undefined && String(body.api_key || "").trim()) fresh.api_key = String(body.api_key || "").trim();
+        if (body.clear_api_key === true) fresh.api_key = "";
+        if (body.active !== undefined) fresh.active = !!body.active;
+        await saveApiKey(fresh);
+        return ok(res, { api_key: publicApiKeyState(fresh) });
+      }
+
+      if (apiKeyMatch && req.method === "DELETE") {
+        await removeApiKey(apiKeyMatch[1]);
+        return ok(res, { ok: true });
+      }
+
+      // List all doctors
       if (path === "/api/admin/doctors" && req.method === "GET") {
-        const ids = await listDoctorIds();
-        const rows = [];
-        for (const id of ids) {
-          const d = await getDoctor(id);
-          if (d) {
-            const fresh = await ensureDoctorDefaults({ ...d });
-            await saveDoctor(fresh);
-            rows.push(publicDoctorState(fresh));
-          }
-        }
-        return ok(res, { rows, plans: PLANS, credit_costs: await getCreditCosts(), providers: providerConfig() });
+        const doctors = await listDoctors();
+        const keys = await listApiKeys();
+        const keyMap = Object.fromEntries(keys.map((key) => [key.id, key]));
+        const counts = assignedCounts(doctors);
+        return ok(res, {
+          rows: doctors.map((doctor) => publicDoctorState(doctor, keyMap[doctor.assigned_api_key_id] || null)),
+          api_keys: keys.map((key) => publicApiKeyState(key, counts[key.id] || 0)),
+          credit_costs: await getCreditCosts(),
+          providers: providerConfig(),
+          default_limits: DEFAULT_LIMITS,
+        });
       }
 
       // Create doctor
       if (path === "/api/admin/doctors" && req.method === "POST") {
         const body = await readJson(req);
-        const id = uuid();
-        const secret = body.secret || crypto.randomBytes(12).toString("hex");
-        const doctor = await ensureDoctorDefaults({
-          id,
-          name: (body.name || "Dr").toString(),
-          email: (body.email || "").toString(),
-          secret,
-          ai_provider: normalizeProvider(body.ai_provider),
-          groq_api_key: (body.groq_api_key || "").toString().trim(),
-          gemini_api_key: (body.gemini_api_key || "").toString().trim(),
-          groq_model: cleanModel(body.groq_model, "groq"),
-          gemini_model: cleanModel(body.gemini_model, "gemini"),
-          plan_name: PLANS[body.plan_name] ? body.plan_name : "starter",
+        if (!String(body.email || "").trim()) return err(res, 400, "Email requis");
+        const doctor = ensureDoctorDefaults({
+          id: uuid(),
+          email: String(body.email || "").trim(),
+          name: String(body.name || "").trim() || displayNameFromEmail(body.email),
+          secret: crypto.randomBytes(12).toString("hex"),
+          monthly_limit: toLimit(body.monthly_limit, DEFAULT_LIMITS.monthly_limit),
+          daily_limit: toLimit(body.daily_limit, DEFAULT_LIMITS.daily_limit),
+          assigned_api_key_id: String(body.assigned_api_key_id || body.api_key_id || "").trim(),
           ai_enabled: body.ai_enabled !== false,
           active: body.active !== false,
         });
-        applyPlan(doctor, doctor.plan_name);
         await saveDoctor(doctor);
-        await indexDoctor(id);
-        return ok(res, { doctor: { ...publicDoctorState(doctor), id, secret } }, 201);
+        await indexDoctor(doctor.id);
+        return ok(res, { doctor: { ...(await publicDoctorWithAssignedKey(doctor)), id: doctor.id, secret: doctor.secret } }, 201);
       }
 
-      // Update doctor (plan, provider keys, ai_enabled, credits)
+      // Update doctor
       const updateMatch = path.match(/^\/api\/admin\/doctors\/([a-f0-9-]+)$/);
       if (updateMatch && (req.method === "PUT" || req.method === "PATCH")) {
         const id = updateMatch[1];
         const doctor = await getDoctor(id);
         if (!doctor) return err(res, 404, "Medecin introuvable");
-        const fresh = await ensureDoctorDefaults({ ...doctor });
+        const fresh = ensureDoctorDefaults({ ...doctor });
         const body = await readJson(req);
-        if (body.name !== undefined) fresh.name = String(body.name);
-        if (body.email !== undefined) fresh.email = String(body.email);
-        applyProviderUpdate(fresh, body);
-        if (body.ai_enabled !== undefined) fresh.ai_enabled = !!body.ai_enabled;
-        if (body.active !== undefined) fresh.active = !!body.active;
-        if (body.plan_name) applyPlan(fresh, body.plan_name);
-        if (typeof body.add_credits === "number") {
-          fresh.used_credits = Math.max(0, (fresh.used_credits || 0) - body.add_credits);
-        }
-        if (typeof body.set_used_credits === "number") {
-          fresh.used_credits = Math.max(0, body.set_used_credits);
-        }
-        if (body.reset_monthly === true) {
-          fresh.used_credits = 0;
-          fresh.renewal_date = nextRenewalDate();
-        }
-        await saveDoctor(fresh);
-        return ok(res, { doctor: publicDoctorState(fresh) });
+        applyDoctorUpdate(fresh, body);
+        const normalized = ensureDoctorDefaults(fresh);
+        await saveDoctor(normalized);
+        return ok(res, { doctor: await publicDoctorWithAssignedKey(normalized) });
       }
 
       // Delete doctor
