@@ -528,7 +528,7 @@ input:focus, select:focus {
 
 .key-row:first-child, .doctor-row:first-child { border-top: 0; }
 .key-row { grid-template-columns: minmax(220px, 1.1fr) minmax(190px, 0.9fr) minmax(150px, 0.7fr) minmax(180px, auto); }
-.doctor-row { grid-template-columns: minmax(240px, 1.1fr) minmax(190px, 0.9fr) minmax(280px, 1fr) minmax(190px, auto); }
+.doctor-row { grid-template-columns: minmax(220px, 1fr) minmax(260px, 1.1fr) minmax(180px, 0.8fr) minmax(260px, 1fr) minmax(190px, auto); }
 
 .row-main strong {
   display: block;
@@ -540,6 +540,37 @@ input:focus, select:focus {
   display: block;
   color: var(--muted);
   font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.credential-stack {
+  display: grid;
+  gap: 8px;
+}
+
+.credential-line {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.credential-label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.credential-line code {
+  display: block;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fbfa;
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
   overflow-wrap: anywhere;
 }
 
@@ -599,6 +630,12 @@ input:focus, select:focus {
   min-height: 34px;
   padding: 0 11px;
   font-size: 13px;
+}
+
+.mini-copy {
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 12px;
 }
 
 .empty {
@@ -943,8 +980,11 @@ export const ADMIN_JS = `(function () {
       '<article class="doctor-row" data-id="' + escapeHtml(row.doctor_id) + '">' +
         '<div class="row-main">' +
           '<strong>' + escapeHtml(row.email || "No email") + '</strong>' +
-          '<span>' + escapeHtml(row.doctor_id) + '</span>' +
           '<div class="badge-row">' + statusBadge + aiBadge + '</div>' +
+        '</div>' +
+        '<div class="credential-stack">' +
+          credentialLine("Doctor ID", row.doctor_id, "Copy ID") +
+          credentialLine("Secret", row.secret, "Copy secret") +
         '</div>' +
         '<div>' +
           '<div class="badge-row">' + keyBadge + '</div>' +
@@ -961,6 +1001,16 @@ export const ADMIN_JS = `(function () {
           '<button class="ghost danger" type="button" data-action="delete-doctor">Delete</button>' +
         '</div>' +
       '</article>';
+  }
+
+  function credentialLine(label, value, copyLabel) {
+    var clean = String(value || "");
+    var copy = clean ? '<button class="ghost mini-copy" type="button" data-copy-value="' + escapeHtml(clean) + '">' + escapeHtml(copyLabel) + '</button>' : "";
+    return '<div class="credential-line">' +
+      '<span class="credential-label">' + escapeHtml(label) + '</span>' +
+      '<code>' + escapeHtml(clean || "Unavailable") + '</code>' +
+      copy +
+    '</div>';
   }
 
   function usageLine(label, used, limit, width, extraClass) {
@@ -1173,22 +1223,38 @@ export const ADMIN_JS = `(function () {
     }
   }
 
-  function copyFromInput(id) {
-    var input = byId(id);
-    if (!input) return;
-    input.select();
-    var value = input.value;
+  function copyText(value) {
+    value = String(value || "");
+    if (!value) return;
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(value).then(function () {
         showToast("Copied");
       }).catch(function () {
-        document.execCommand("copy");
-        showToast("Copied");
+        fallbackCopyText(value);
       });
     } else {
-      document.execCommand("copy");
-      showToast("Copied");
+      fallbackCopyText(value);
     }
+  }
+
+  function fallbackCopyText(value) {
+    var textarea = document.createElement("textarea");
+    textarea.value = value;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.top = "-9999px";
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    document.body.removeChild(textarea);
+    showToast("Copied");
+  }
+
+  function copyFromInput(id) {
+    var input = byId(id);
+    if (!input) return;
+    input.select();
+    copyText(input.value);
   }
 
   function closeDialog(id) {
@@ -1276,6 +1342,8 @@ export const ADMIN_JS = `(function () {
       if (close) closeDialog(close.dataset.closeDialog);
       var copy = event.target.closest("[data-copy]");
       if (copy) copyFromInput(copy.dataset.copy);
+      var copyValue = event.target.closest("[data-copy-value]");
+      if (copyValue) copyText(copyValue.dataset.copyValue);
     });
   }
 

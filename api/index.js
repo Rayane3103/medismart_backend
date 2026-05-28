@@ -315,9 +315,22 @@ function publicDoctorState(doctor, apiKey = null) {
   };
 }
 
+function adminDoctorState(doctor, apiKey = null) {
+  return {
+    ...publicDoctorState(doctor, apiKey),
+    id: doctor.id,
+    secret: doctor.secret || "",
+  };
+}
+
 async function publicDoctorWithAssignedKey(doctor) {
   const apiKey = await getApiKey(doctor.assigned_api_key_id);
   return publicDoctorState(doctor, apiKey);
+}
+
+async function adminDoctorWithAssignedKey(doctor) {
+  const apiKey = await getApiKey(doctor.assigned_api_key_id);
+  return adminDoctorState(doctor, apiKey);
 }
 
 async function getCreditCosts() {
@@ -691,7 +704,7 @@ export default async function handler(req, res) {
         const keyMap = Object.fromEntries(keys.map((key) => [key.id, key]));
         const counts = assignedCounts(doctors);
         return ok(res, {
-          rows: doctors.map((doctor) => publicDoctorState(doctor, keyMap[doctor.assigned_api_key_id] || null)),
+          rows: doctors.map((doctor) => adminDoctorState(doctor, keyMap[doctor.assigned_api_key_id] || null)),
           api_keys: keys.map((key) => publicApiKeyState(key, counts[key.id] || 0)),
           credit_costs: await getCreditCosts(),
           providers: providerConfig(),
@@ -716,7 +729,7 @@ export default async function handler(req, res) {
         });
         await saveDoctor(doctor);
         await indexDoctor(doctor.id);
-        return ok(res, { doctor: { ...(await publicDoctorWithAssignedKey(doctor)), id: doctor.id, secret: doctor.secret } }, 201);
+        return ok(res, { doctor: await adminDoctorWithAssignedKey(doctor) }, 201);
       }
 
       // Update doctor
@@ -730,7 +743,7 @@ export default async function handler(req, res) {
         applyDoctorUpdate(fresh, body);
         const normalized = ensureDoctorDefaults(fresh);
         await saveDoctor(normalized);
-        return ok(res, { doctor: await publicDoctorWithAssignedKey(normalized) });
+        return ok(res, { doctor: await adminDoctorWithAssignedKey(normalized) });
       }
 
       // Delete doctor
