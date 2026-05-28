@@ -105,9 +105,16 @@ function providerConfig() {
 }
 
 async function getAdminToken() {
+  const configuredToken = String(process.env.ADMIN_TOKEN || "").trim();
+  if (configuredToken) {
+    const storedToken = await redis.get("admin:token");
+    if (storedToken !== configuredToken) await redis.set("admin:token", configuredToken);
+    return configuredToken;
+  }
+
   let tok = await redis.get("admin:token");
   if (!tok) {
-    tok = process.env.ADMIN_TOKEN || crypto.randomBytes(24).toString("hex");
+    tok = crypto.randomBytes(24).toString("hex");
     await redis.set("admin:token", tok);
   }
   return tok;
