@@ -34,10 +34,10 @@ const DEFAULT_COSTS = {
   chat: 1,
   lab_analysis: 3,
   pdf_analysis: 3,
-  ecg_analysis: 5,
-  image_analysis: 5,
-  multimodal_analysis: 10,
-  irm_analysis: 10,
+  ecg_analysis: 3,
+  image_analysis: 3,
+  multimodal_analysis: 3,
+  irm_analysis: 3,
 };
 
 // ---------- helpers ----------
@@ -335,11 +335,11 @@ async function adminDoctorWithAssignedKey(doctor) {
 
 async function getCreditCosts() {
   const stored = await redis.get("config:credit_costs");
-  return { ...DEFAULT_COSTS, ...(stored || {}) };
+  return { ...DEFAULT_COSTS, ...(stored || {}), chat: 1, lab_analysis: 3, pdf_analysis: 3, ecg_analysis: 3, image_analysis: 3, multimodal_analysis: 3, irm_analysis: 3 };
 }
 
 function creditCostFor(costs, action) {
-  return costs[action] ?? 1;
+  return String(action || "chat") === "chat" ? (costs.chat ?? 1) : 3;
 }
 
 function applyDoctorUpdate(doctor, body) {
@@ -388,26 +388,133 @@ async function readLogs(doctorId, limit = 50) {
 }
 
 // ---------- AI providers ----------
+function normalizeRole(role) {
+  const clean = String(role || "user").toLowerCase();
+  if (clean === "system" || clean === "assistant" || clean === "user") return clean;
+  if (clean === "model") return "assistant";
+  return "user";
+}
+
+function dataUrlInfo(url) {
+  const match = /^data:([^;,]+);base64,([\s\S]+)$/i.exec(String(url || ""));
+  if (!match) return null;
+  return {
+    mimeType: match[1].trim().toLowerCase(),
+    data: match[2].replace(/\s/g, ""),
+  };
+}
+
+function normalizeImageUrlPart(part) {
+  const rawImage = part?.image_url || part?.imageUrl || part?.input_image || part?.image || {};
+  const url = typeof rawImage === "string" ? rawImage : rawImage.url || rawImage.data_url || rawImage.dataUrl;
+  if (!url) return null;
+  return {
+    type: "image_url",
+    image_url: {
+      url: String(url),
+      detail: rawImage.detail || part.detail || "high",
+    },
+  };
+}
+
+function normalizeFilePart(part) {
+  const rawFile = part?.file || part?.input_file || {};
+  const url = rawFile.url || rawFile.data_url || rawFile.dataUrl || part.url;
+  if (!url) return null;
+  return {
+    type: "input_file",
+    file: {
+      filename: rawFile.filename || part.filename || "document",
+      url: String(url),
+    },
+  };
+}
+
+function normalizeContentPart(part) {
+  if (typeof part === "string") {
+    const text = part.trim();
+    return text ? { type: "text", text } : null;
+  }
+  if (!part || typeof part !== "object") return null;
+  const type = String(part.type || "").toLowerCase();
+  if (type === "image_url" || type === "input_image" || part.image_url || part.imageUrl) {
+    return normalizeImageUrlPart(part);
+  }
+  if (type === "input_file" || type === "file" || part.file || part.input_file) {
+    return normalizeFilePart(part);
+  }
+  if (type === "text" || type === "input_text" || part.text || part.input_text) {
+    const text = String(part.text || part.input_text || "").trim();
+    return text ? { type: "text", text } : null;
+  }
+  const text = String(part.content || part.message || "").trim();
+  return text ? { type: "text", text } : null;
+}
+
+function normalizeMessageContent(content) {
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) {
+    const parts = content.map(normalizeContentPart).filter(Boolean);
+    return parts.length ? parts : "";
+  }
+  if (content && typeof content === "object") {
+    const part = normalizeContentPart(content);
+    return part ? [part] : "";
+  }
+  return "";
+}
+
 function messageText(content) {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
     return content.map((part) => {
       if (typeof part === "string") return part;
       if (!part || typeof part !== "object") return "";
+      if (part.type === "image_url") return "[image jointe]";
+      if (part.type === "input_file" || part.type === "file") return `[fichier joint: ${part.file?.filename || "document"}]`;
       return part.text || part.input_text || "";
     }).filter(Boolean).join("\n");
   }
   if (content && typeof content === "object") {
+    if (content.type === "image_url") return "[image jointe]";
+    if (content.type === "input_file" || content.type === "file") return `[fichier joint: ${content.file?.filename || "document"}]`;
     return content.text || content.input_text || content.content || "";
   }
   return "";
 }
 
-function normalizeRole(role) {
-  const clean = String(role || "user").toLowerCase();
-  if (clean === "system" || clean === "assistant" || clean === "user") return clean;
-  if (clean === "model") return "assistant";
-  return "user";
+function hasMessageContent(content) {
+  if (typeof content === "string") return Boolean(content.trim());
+  if (!Array.isArray(content)) return false;
+  return content.some((part) => {
+    if (!part || typeof part !== "object") return false;
+    if (part.type === "text") return Boolean(String(part.text || "").trim());
+    if (part.type === "image_url") return Boolean(part.image_url?.url);
+    if (part.type === "input_file") return Boolean(part.file?.url);
+    return false;
+  });
+}
+
+function contentHasImage(content) {
+  return Array.isArray(content) && content.some((part) => part?.type === "image_url" && part.image_url?.url);
+}
+
+function messagesHaveImages(messages) {
+  return messages.some((message) => contentHasImage(message.content));
+}
+
+function contentHasFiles(content) {
+  return Array.isArray(content) && content.some((part) => part?.type === "input_file" && part.file?.url);
+}
+
+function messagesHaveFiles(messages) {
+  return messages.some((message) => contentHasFiles(message.content));
+}
+
+function modelAcceptsImages(provider, model) {
+  if (provider === "gemini") return true;
+  const clean = String(model || "").toLowerCase();
+  return /(vision|llama-4|scout|maverick|pixtral|qwen.*vl|llava)/.test(clean);
 }
 
 function normalizeMessages(body) {
@@ -416,8 +523,8 @@ function normalizeMessages(body) {
     : [{ role: "user", content: (body.message || "").toString() }];
   return source.map((m) => ({
     role: normalizeRole(m?.role),
-    content: messageText(m?.content).trim(),
-  })).filter((m) => m.content);
+    content: normalizeMessageContent(m?.content ?? ""),
+  })).filter((m) => hasMessageContent(m.content));
 }
 
 async function readUpstreamJson(upstream) {
@@ -448,17 +555,61 @@ async function callGroqChat({ apiKey, model, messages, maxTokens }) {
   return raw?.choices?.[0]?.message?.content || "";
 }
 
+function geminiTextPart(text) {
+  const clean = String(text || "").trim();
+  return clean ? { text: clean } : null;
+}
+
+function contentToGeminiParts(content) {
+  if (typeof content === "string") {
+    const part = geminiTextPart(content);
+    return part ? [part] : [];
+  }
+  if (!Array.isArray(content)) return [];
+  const parts = [];
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    if (part.type === "text") {
+      const textPart = geminiTextPart(part.text);
+      if (textPart) parts.push(textPart);
+      continue;
+    }
+    if (part.type === "image_url") {
+      const info = dataUrlInfo(part.image_url?.url);
+      if (info) {
+        parts.push({ inline_data: { mime_type: info.mimeType, data: info.data } });
+      } else {
+        const textPart = geminiTextPart("[image jointe non inline]");
+        if (textPart) parts.push(textPart);
+      }
+    }
+    if (part.type === "input_file") {
+      const info = dataUrlInfo(part.file?.url);
+      if (info) {
+        parts.push({ inline_data: { mime_type: info.mimeType, data: info.data } });
+      } else {
+        const textPart = geminiTextPart(`[fichier joint non inline: ${part.file?.filename || "document"}]`);
+        if (textPart) parts.push(textPart);
+      }
+    }
+  }
+  return parts;
+}
+
 function toGeminiPayload(messages) {
   const systemParts = [];
   const contents = [];
   for (const message of messages) {
     if (message.role === "system") {
-      systemParts.push({ text: message.content });
+      const textPart = geminiTextPart(messageText(message.content));
+      if (textPart) systemParts.push(textPart);
       continue;
     }
+    const parts = contentToGeminiParts(message.content);
+    if (!parts.length) continue;
     contents.push({
       role: message.role === "assistant" ? "model" : "user",
-      parts: [{ text: message.content }],
+      parts,
     });
   }
   if (!contents.length && systemParts.length) {
@@ -574,7 +725,7 @@ export default async function handler(req, res) {
     }
 
     // ---- doctor: AI chat using assigned named key ----
-    if (path === "/api/me/ai/chat") {
+    if (path === "/api/me/ai/chat" || path === "/api/me/ai/analyze-document") {
       if (req.method !== "POST") return err(res, 405, "Method not allowed");
       const doctor = await verifyDoctor(req);
       if (!doctor) return err(res, 401, "Token medecin invalide");
@@ -602,6 +753,12 @@ export default async function handler(req, res) {
       const provider = normalizeProvider(assignedKey.provider);
       const model = cleanModel(assignedKey.model, provider);
       const providerLabel = AI_PROVIDERS[provider].label;
+      if (messagesHaveFiles(messages) && provider !== "gemini") {
+        return err(res, 409, `Le modele ${providerLabel} ${model} ne supporte pas les fichiers PDF joints. Assignez une cle Gemini dans le panneau admin pour analyser les documents visuels.`);
+      }
+      if (messagesHaveImages(messages) && !modelAcceptsImages(provider, model)) {
+        return err(res, 409, `Le modele ${providerLabel} ${model} ne supporte pas les images. Assignez une cle Gemini ou un modele vision dans le panneau admin.`);
+      }
 
       let assistantText = "";
       try {
@@ -770,7 +927,7 @@ export default async function handler(req, res) {
           if (typeof body[k] === "number") safe[k] = Math.max(0, parseInt(body[k], 10));
         }
         await redis.set("config:credit_costs", safe);
-        return ok(res, { credit_costs: { ...DEFAULT_COSTS, ...safe } });
+        return ok(res, { credit_costs: await getCreditCosts() });
       }
 
       return err(res, 404, "Route admin inconnue");
