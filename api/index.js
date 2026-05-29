@@ -21,6 +21,12 @@ const AI_PROVIDERS = {
 const GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions";
 const GEMINI_GENERATE_URL = "https://generativelanguage.googleapis.com/v1beta/models";
 
+// Vision-capable fallback models, used automatically when an image is sent but
+// the doctor's assigned model is text-only. Same provider + same API key, so no
+// extra credentials are required.
+const GROQ_VISION_MODEL = process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
+const GEMINI_VISION_MODEL = process.env.GEMINI_VISION_MODEL || "gemini-2.5-flash";
+
 const DEFAULT_LIMITS = {
   monthly_limit: 500,
   daily_limit: 50,
@@ -517,6 +523,14 @@ function modelAcceptsImages(provider, model) {
   return /(vision|llama-4|scout|maverick|pixtral|qwen.*vl|llava)/.test(clean);
 }
 
+// Returns a vision-capable model for the given provider so image documents
+// (ECG, radiographie, echographie, etc.) can be analysed visually even when the
+// doctor's assigned model is text-only. Uses the same provider/API key.
+function visionModelFor(provider) {
+  if (provider === "gemini") return cleanModel(GEMINI_VISION_MODEL, "gemini");
+  return GROQ_VISION_MODEL;
+}
+
 function normalizeMessages(body) {
   const source = Array.isArray(body.messages) && body.messages.length
     ? body.messages
@@ -751,13 +765,23 @@ export default async function handler(req, res) {
       if (!messages.length) return err(res, 400, "Message requis");
       const maxTokens = Math.min(4096, Math.max(64, parseInt(body.max_tokens || 512, 10)));
       const provider = normalizeProvider(assignedKey.provider);
-      const model = cleanModel(assignedKey.model, provider);
+      let model = cleanModel(assignedKey.model, provider);
       const providerLabel = AI_PROVIDERS[provider].label;
       if (messagesHaveFiles(messages) && provider !== "gemini") {
         return err(res, 409, `Le modele ${providerLabel} ${model} ne supporte pas les fichiers PDF joints. Assignez une cle Gemini dans le panneau admin pour analyser les documents visuels.`);
       }
+      // If an image is attached but the assigned model is text-only, transparently
+      // route this request to a vision-capable model on the same provider so the
+      // document is actually analysed visually instead of being rejected.
+      let modelAutoRouted = false;
       if (messagesHaveImages(messages) && !modelAcceptsImages(provider, model)) {
-        return err(res, 409, `Le modele ${providerLabel} ${model} ne supporte pas les images. Assignez une cle Gemini ou un modele vision dans le panneau admin.`);
+        const visionModel = visionModelFor(provider);
+        if (visionModel && modelAcceptsImages(provider, visionModel)) {
+          model = visionModel;
+          modelAutoRouted = true;
+        } else {
+          return err(res, 409, `Le modele ${providerLabel} ${model} ne supporte pas les images. Assignez une cle Gemini ou un modele vision dans le panneau admin.`);
+        }
       }
 
       let assistantText = "";
@@ -772,12 +796,13 @@ export default async function handler(req, res) {
       fresh.daily_used = (fresh.daily_used || 0) + cost;
       fresh.daily_usage_date = today();
       await saveDoctor(fresh);
-      await logCreditAction(fresh.id, action, cost, true, false, `${assignedKey.name} (${providerLabel} ${model})`);
+      await logCreditAction(fresh.id, action, cost, true, false, `${assignedKey.name} (${providerLabel} ${model})${modelAutoRouted ? " [vision auto]" : ""}`);
 
       return ok(res, {
         content: assistantText,
         provider,
         model,
+        model_auto_routed: modelAutoRouted,
         api_key_name: assignedKey.name,
         credits_used: cost,
         monthly_remaining: Math.max(0, fresh.monthly_limit - fresh.monthly_used),
